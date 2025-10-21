@@ -13,11 +13,26 @@ namespace Xls2XlsxConverter
 
         public ExcelConverter()
         {
+            // 延迟初始化，在首次转换时再创建 Excel 应用
+        }
+
+        internal void EnsureExcelApplication()
+        {
+            if (_excelApp != null)
+            {
+                return;
+            }
+
             InitializeExcelApplication();
         }
 
         private void InitializeExcelApplication()
         {
+            if (_excelApp != null)
+            {
+                return;
+            }
+
             try
             {
                 _excelApp = new Application
@@ -43,6 +58,8 @@ namespace Xls2XlsxConverter
 
             if (!File.Exists(xlsFilePath))
                 throw new FileNotFoundException($"源文件不存在: {xlsFilePath}");
+
+            EnsureExcelApplication();
 
             Workbook workbook = null;
             try
@@ -166,5 +183,6 @@ namespace Xls2XlsxConverter
         public string OutputFolder { get; set; }
         public bool IncludeSubfolders { get; set; } = true;
         public bool OverwriteExisting { get; set; } = false;
+        public bool DeleteSourceAfterSuccess { get; set; } = false;
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.IO;
@@ -19,8 +20,14 @@ namespace Xls2XlsxConverter
         private bool _hasShownTrayTip = false;
         private FileSystemWatcher _fileWatcher;
         private readonly ConcurrentQueue<string> _pendingFiles = new ConcurrentQueue<string>();
+        private readonly ConcurrentDictionary<string, byte> _queuedFiles = new ConcurrentDictionary<string, byte>();
+        private readonly ConcurrentDictionary<string, int> _autoRetryCounts = new ConcurrentDictionary<string, int>();
         private CancellationTokenSource _watcherCancellation;
         private Task _backgroundProcessorTask;
+        private ConversionOptions _autoModeOptions;
+        private bool _isAutoMonitoring = false;
+        private bool _suppressAutoMonitorEvent = false;
+        private readonly SemaphoreSlim _conversionSemaphore = new SemaphoreSlim(1, 1);
 
         public MainForm()
         {
@@ -139,6 +146,17 @@ namespace Xls2XlsxConverter
             };
             this.Controls.Add(chkOverwriteExisting);
 
+            var chkDeleteAfterConvert = new CheckBox
+            {
+                Name = "chkDeleteAfterConvert",
+                Text = "转换成功后删除源XLS",
+                Location = new Point(320, 150),
+                Size = new Size(200, 20),
+                Font = new Font("Microsoft YaHei", 9F),
+                Checked = false
+            };
+            this.Controls.Add(chkDeleteAfterConvert);
+
             // 转换按钮
             var btnConvert = new Button
             {
@@ -167,6 +185,29 @@ namespace Xls2XlsxConverter
             };
             btnCancel.Click += BtnCancel_Click;
             this.Controls.Add(btnCancel);
+
+            var chkAutoMonitor = new CheckBox
+            {
+                Name = "chkAutoMonitor",
+                Text = "自动监控新XLS文件",
+                Location = new Point(330, 194),
+                Size = new Size(200, 20),
+                Font = new Font("Microsoft YaHei", 9F),
+                Checked = false
+            };
+            chkAutoMonitor.CheckedChanged += ChkAutoMonitor_CheckedChanged;
+            this.Controls.Add(chkAutoMonitor);
+
+            var lblAutoStatus = new Label
+            {
+                Name = "lblAutoStatus",
+                Text = "自动监控未开启",
+                Location = new Point(330, 220),
+                Size = new Size(230, 20),
+                Font = new Font("Microsoft YaHei", 8.5F),
+                ForeColor = Color.Gray
+            };
+            this.Controls.Add(lblAutoStatus);
 
             // 进度条
             var progressBar = new ProgressBar
@@ -239,21 +280,8 @@ namespace Xls2XlsxConverter
             var btnConvert = this.Controls["btnConvert"] as Button;
             var btnCancel = this.Controls["btnCancel"] as Button;
 
-            if (string.IsNullOrWhiteSpace(txtInputFolder.Text))
+            if (!TryValidateFolders(txtInputFolder.Text, txtOutputFolder.Text))
             {
-                MessageBox.Show("请选择输入文件夹！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(txtOutputFolder.Text))
-            {
-                MessageBox.Show("请选择输出文件夹！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            if (!Directory.Exists(txtInputFolder.Text))
-            {
-                MessageBox.Show("输入文件夹不存在！", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
             }
 
@@ -262,13 +290,15 @@ namespace Xls2XlsxConverter
                 _isConverting = true;
                 btnConvert.Enabled = false;
                 btnCancel.Enabled = true;
+                ToggleAutoMonitorControls(isEnabled: false);
 
                 var options = new ConversionOptions
                 {
                     InputFolder = txtInputFolder.Text,
                     OutputFolder = txtOutputFolder.Text,
                     IncludeSubfolders = chkIncludeSubfolders.Checked,
-                    OverwriteExisting = chkOverwriteExisting.Checked
+                    OverwriteExisting = chkOverwriteExisting.Checked,
+                    DeleteSourceAfterSuccess = (this.Controls["chkDeleteAfterConvert"] as CheckBox)?.Checked == true
                 };
 
                 await ConvertFilesAsync(options);
@@ -283,6 +313,7 @@ namespace Xls2XlsxConverter
                 _isConverting = false;
                 btnConvert.Enabled = true;
                 btnCancel.Enabled = false;
+                ToggleAutoMonitorControls(isEnabled: true);
             }
         }
 
@@ -294,25 +325,62 @@ namespace Xls2XlsxConverter
             var btnConvert = this.Controls["btnConvert"] as Button;
             var btnCancel = this.Controls["btnCancel"] as Button;
             var lblProgress = this.Controls["lblProgress"] as Label;
-            
+
             btnConvert.Enabled = true;
             btnCancel.Enabled = false;
             lblProgress.Text = "转换已取消";
-            
+
             LogMessage("用户取消了转换操作", Color.Orange);
+        }
+
+        private bool TryValidateFolders(string input, string output)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                MessageBox.Show("请选择输入文件夹！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(output))
+            {
+                MessageBox.Show("请选择输出文件夹！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            if (!Directory.Exists(input))
+            {
+                MessageBox.Show("输入文件夹不存在！", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+
+            if (!Directory.Exists(output))
+            {
+                try
+                {
+                    Directory.CreateDirectory(output);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"无法创建输出文件夹：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return false;
+                }
+            }
+
+            if (Path.GetFullPath(input).Equals(Path.GetFullPath(output), StringComparison.OrdinalIgnoreCase))
+            {
+                MessageBox.Show("输入与输出文件夹不能相同！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+
+            return true;
         }
 
         private async Task ConvertFilesAsync(ConversionOptions options)
         {
             var progressBar = this.Controls["progressBar"] as ProgressBar;
             var lblProgress = this.Controls["lblProgress"] as Label;
-            
-            // 获取所有XLS文件
-            var searchOption = options.IncludeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var xlsFiles = Directory.GetFiles(options.InputFolder, "*.xls", searchOption)
-                                  .Where(f => !Path.GetFileName(f).StartsWith("~$")) // 排除临时文件
-                                  .ToArray();
 
+            var xlsFiles = GetPendingFiles(options);
             if (xlsFiles.Length == 0)
             {
                 MessageBox.Show("在指定文件夹中未找到XLS文件！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -338,20 +406,26 @@ namespace Xls2XlsxConverter
                 try
                 {
                     lblProgress.Text = $"正在转换: {Path.GetFileName(xlsFile)} ({i + 1}/{xlsFiles.Length})";
-                    
-                    // 确保输出目录存在
+
                     Directory.CreateDirectory(outputDir);
 
-                    // 检查文件是否已存在
                     if (File.Exists(xlsxFile) && !options.OverwriteExisting)
                     {
                         LogMessage($"跳过: {Path.GetFileName(xlsxFile)} (文件已存在)", Color.Orange);
                         continue;
                     }
 
-                    // 转换文件
-                    await Task.Run(() => _converter.ConvertXlsToXlsx(xlsFile, xlsxFile));
-                    
+                    await Task.Run(() =>
+                    {
+                        _converter.EnsureExcelApplication();
+                        _converter.ConvertXlsToXlsx(xlsFile, xlsxFile);
+                    });
+
+                    if (options.DeleteSourceAfterSuccess)
+                    {
+                        TryDeleteSourceFile(xlsFile);
+                    }
+
                     successCount++;
                     LogMessage($"成功: {Path.GetFileName(xlsFile)} → {Path.GetFileName(xlsxFile)}", Color.Green);
                 }
@@ -362,14 +436,14 @@ namespace Xls2XlsxConverter
                 }
 
                 progressBar.Value = i + 1;
-                Application.DoEvents(); // 更新UI
+                Application.DoEvents();
             }
 
             if (_isConverting)
             {
                 lblProgress.Text = $"转换完成! 成功: {successCount}, 失败: {failureCount}";
                 LogMessage($"批量转换完成! 成功转换 {successCount} 个文件，失败 {failureCount} 个文件", Color.Blue);
-                
+
                 if (successCount > 0)
                 {
                     MessageBox.Show($"转换完成!\n成功: {successCount} 个文件\n失败: {failureCount} 个文件", 
@@ -382,10 +456,11 @@ namespace Xls2XlsxConverter
         {
             var txtLog = this.Controls["txtLog"] as TextBox;
             var timestamp = DateTime.Now.ToString("HH:mm:ss");
-            
+
             if (txtLog.InvokeRequired)
             {
-                txtLog.Invoke(new Action(() => {
+                txtLog.Invoke(new Action(() =>
+                {
                     txtLog.AppendText($"[{timestamp}] {message}\r\n");
                     txtLog.SelectionStart = txtLog.Text.Length;
                     txtLog.ScrollToCaret();
@@ -413,10 +488,15 @@ namespace Xls2XlsxConverter
                 _converter.CancelConversion();
             }
 
-            //_notifyIcon?.Visible = false; 
-            _notifyIcon?.Dispose();
+            StopAutoMonitor();
+            if (_notifyIcon != null)
+            {
+                _notifyIcon.Visible = false;
+                _notifyIcon.Dispose();
+            }
             _trayMenu?.Dispose();
             _converter?.Dispose();
+            _conversionSemaphore.Dispose();
             base.OnFormClosing(e);
         }
 
@@ -465,6 +545,358 @@ namespace Xls2XlsxConverter
             Show();
             WindowState = FormWindowState.Normal;
             Activate();
+        }
+
+        private void ChkAutoMonitor_CheckedChanged(object sender, EventArgs e)
+        {
+            if (_suppressAutoMonitorEvent)
+            {
+                return;
+            }
+
+            if (!(sender is CheckBox chkAutoMonitor))
+            {
+                return;
+            }
+
+            if (chkAutoMonitor.Checked)
+            {
+                StartAutoMonitor();
+            }
+            else
+            {
+                StopAutoMonitor(userInitiated: true);
+            }
+        }
+
+        private void TryDeleteSourceFile(string xlsFile)
+        {
+            try
+            {
+                File.Delete(xlsFile);
+                LogMessage($"已删除源文件: {Path.GetFileName(xlsFile)}", Color.Gray);
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"删除源文件失败: {Path.GetFileName(xlsFile)} - {ex.Message}", Color.Red);
+            }
+        }
+
+        private void StartAutoMonitor()
+        {
+            if (_isAutoMonitoring)
+            {
+                return;
+            }
+
+            var txtInputFolder = this.Controls["txtInputFolder"] as TextBox;
+            var txtOutputFolder = this.Controls["txtOutputFolder"] as TextBox;
+            var chkIncludeSubfolders = this.Controls["chkIncludeSubfolders"] as CheckBox;
+            var chkOverwriteExisting = this.Controls["chkOverwriteExisting"] as CheckBox;
+            var chkAutoMonitor = this.Controls["chkAutoMonitor"] as CheckBox;
+            var lblAutoStatus = this.Controls["lblAutoStatus"] as Label;
+
+            if (!TryValidateFolders(txtInputFolder.Text, txtOutputFolder.Text))
+            {
+                _suppressAutoMonitorEvent = true;
+                chkAutoMonitor.Checked = false;
+                _suppressAutoMonitorEvent = false;
+                return;
+            }
+
+            _autoModeOptions = new ConversionOptions
+            {
+                InputFolder = txtInputFolder.Text,
+                OutputFolder = txtOutputFolder.Text,
+                IncludeSubfolders = chkIncludeSubfolders.Checked,
+                OverwriteExisting = chkOverwriteExisting.Checked
+            };
+
+            _watcherCancellation = new CancellationTokenSource();
+            _fileWatcher = CreateFileWatcher(_autoModeOptions.InputFolder, _autoModeOptions.IncludeSubfolders);
+            _fileWatcher.EnableRaisingEvents = true;
+
+            _backgroundProcessorTask = Task.Run(() => ProcessPendingFilesAsync(_watcherCancellation.Token));
+
+            _isAutoMonitoring = true;
+            lblAutoStatus.Text = "自动监控已开启";
+            lblAutoStatus.ForeColor = Color.Green;
+            LogMessage("自动监控已开启，将自动转换新XLS文件", Color.Blue);
+        }
+
+        private void StopAutoMonitor(bool userInitiated = false)
+        {
+            if (!_isAutoMonitoring)
+            {
+                return;
+            }
+
+            _isAutoMonitoring = false;
+
+            try
+            {
+                _watcherCancellation?.Cancel();
+                _fileWatcher?.Dispose();
+                _fileWatcher = null;
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"停止自动监控时发生错误: {ex.Message}", Color.Red);
+            }
+
+            if (_backgroundProcessorTask != null)
+            {
+                try
+                {
+                    _backgroundProcessorTask.Wait(TimeSpan.FromSeconds(2));
+                }
+                catch (AggregateException)
+                {
+                    // 忽略后台任务关闭时的异常
+                }
+            }
+
+            _backgroundProcessorTask = null;
+
+            _watcherCancellation?.Dispose();
+            _watcherCancellation = null;
+
+            _autoRetryCounts.Clear();
+            _queuedFiles.Clear();
+            while (_pendingFiles.TryDequeue(out _)) { }
+
+            var chkAutoMonitor = this.Controls["chkAutoMonitor"] as CheckBox;
+            var lblAutoStatus = this.Controls["lblAutoStatus"] as Label;
+
+            if (chkAutoMonitor != null)
+            {
+                _suppressAutoMonitorEvent = true;
+                try
+                {
+                    chkAutoMonitor.Checked = false;
+                }
+                finally
+                {
+                    _suppressAutoMonitorEvent = false;
+                }
+            }
+
+            if (lblAutoStatus != null)
+            {
+                lblAutoStatus.Text = userInitiated ? "自动监控已关闭" : "自动监控未开启";
+                lblAutoStatus.ForeColor = Color.Gray;
+            }
+
+            LogMessage("自动监控已关闭", Color.Blue);
+        }
+
+        private FileSystemWatcher CreateFileWatcher(string folder, bool includeSubfolders)
+        {
+            var watcher = new FileSystemWatcher(folder)
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite,
+                Filter = "*.xls",
+                IncludeSubdirectories = includeSubfolders,
+                EnableRaisingEvents = false
+            };
+
+            watcher.Created += (s, e) => EnqueueFileForProcessing(e.FullPath);
+            watcher.Changed += (s, e) => EnqueueFileForProcessing(e.FullPath);
+            watcher.Renamed += (s, e) => EnqueueFileForProcessing(e.FullPath);
+
+            return watcher;
+        }
+
+        private void EnqueueFileForProcessing(string filePath)
+        {
+            if (!_isAutoMonitoring)
+            {
+                return;
+            }
+
+            if (!filePath.EndsWith(".xls", StringComparison.OrdinalIgnoreCase) ||
+                Path.GetFileName(filePath).StartsWith("~$"))
+            {
+                return;
+            }
+
+            var normalizedPath = Path.GetFullPath(filePath);
+            _queuedFiles[normalizedPath] = 0;
+            _pendingFiles.Enqueue(normalizedPath);
+        }
+
+        private async Task ProcessPendingFilesAsync(CancellationToken cancellationToken)
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (_pendingFiles.TryDequeue(out var filePath))
+                {
+                    if (!ShouldProcessFile(filePath))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        await _conversionSemaphore.WaitAsync(cancellationToken);
+                        await ConvertSingleFileAsync(filePath, _autoModeOptions, cancellationToken);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        LogMessage($"自动转换失败: {Path.GetFileName(filePath)} - {ex.Message}", Color.Red);
+                        ScheduleRetry(filePath);
+                    }
+                    finally
+                    {
+                        _conversionSemaphore.Release();
+                    }
+                }
+                else
+                {
+                    await Task.Delay(500, cancellationToken);
+                }
+            }
+        }
+
+        private bool ShouldProcessFile(string filePath)
+        {
+            if (!_queuedFiles.TryGetValue(filePath, out _))
+            {
+                return false;
+            }
+
+            if (!File.Exists(filePath))
+            {
+                _queuedFiles.TryRemove(filePath, out _);
+                return false;
+            }
+
+            var lastWriteTime = File.GetLastWriteTimeUtc(filePath);
+            if (DateTime.UtcNow - lastWriteTime < TimeSpan.FromSeconds(2))
+            {
+                _queuedFiles[filePath] = 0;
+                _pendingFiles.Enqueue(filePath);
+                return false;
+            }
+
+            return true;
+        }
+
+        private async Task ConvertSingleFileAsync(string xlsFile, ConversionOptions options, CancellationToken cancellationToken)
+        {
+            var relativePath = Path.GetRelativePath(options.InputFolder, Path.GetDirectoryName(xlsFile));
+            var outputDir = Path.Combine(options.OutputFolder, relativePath);
+            var fileName = Path.GetFileNameWithoutExtension(xlsFile);
+            var xlsxFile = Path.Combine(outputDir, fileName + ".xlsx");
+
+            try
+            {
+                Directory.CreateDirectory(outputDir);
+
+                if (File.Exists(xlsxFile) && !options.OverwriteExisting)
+                {
+                    LogMessage($"自动转换跳过: {Path.GetFileName(xlsxFile)} (文件已存在)", Color.Orange);
+                    _queuedFiles.TryRemove(xlsFile, out _);
+                    return;
+                }
+
+                LogMessage($"自动转换开始: {Path.GetFileName(xlsFile)}", Color.Blue);
+                await Task.Run(() =>
+                {
+                    _converter.EnsureExcelApplication();
+                    _converter.ConvertXlsToXlsx(xlsFile, xlsxFile);
+                }, cancellationToken);
+
+                if (options.DeleteSourceAfterSuccess)
+                {
+                    TryDeleteSourceFile(xlsFile);
+                }
+
+                LogMessage($"自动转换成功: {Path.GetFileName(xlsFile)}", Color.Green);
+                _queuedFiles.TryRemove(xlsFile, out _);
+                _autoRetryCounts.TryRemove(xlsFile, out _);
+            }
+            catch (Exception ex)
+            {
+                LogMessage($"自动转换失败: {Path.GetFileName(xlsFile)} - {ex.Message}", Color.Red);
+                ScheduleRetry(xlsFile);
+            }
+        }
+
+        private void ScheduleRetry(string filePath)
+        {
+            var retryCount = _autoRetryCounts.AddOrUpdate(filePath, 1, (key, current) => current + 1);
+
+            if (retryCount > 3)
+            {
+                LogMessage($"自动转换超过最大重试次数，已跳过: {Path.GetFileName(filePath)}", Color.Red);
+                _queuedFiles.TryRemove(filePath, out _);
+                _autoRetryCounts.TryRemove(filePath, out _);
+                return;
+            }
+
+            Task.Delay(TimeSpan.FromSeconds(Math.Min(30, retryCount * 5))).ContinueWith(_ =>
+            {
+                if (_isAutoMonitoring)
+                {
+                    _queuedFiles[filePath] = 0;
+                    _pendingFiles.Enqueue(filePath);
+                }
+            }, TaskScheduler.Default);
+        }
+
+        private string[] GetPendingFiles(ConversionOptions options)
+        {
+            var searchOption = options.IncludeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+            var discoveredFiles = Directory.GetFiles(options.InputFolder, "*.xls", searchOption)
+                                           .Where(f => !Path.GetFileName(f).StartsWith("~$"))
+                                           .Select(Path.GetFullPath)
+                                           .ToArray();
+
+            if (_isAutoMonitoring)
+            {
+                var allFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var file in discoveredFiles)
+                {
+                    allFiles.Add(file);
+                }
+
+                while (_pendingFiles.TryDequeue(out var queuedFile))
+                {
+                    allFiles.Add(Path.GetFullPath(queuedFile));
+                }
+
+                return allFiles.ToArray();
+            }
+
+            return discoveredFiles;
+        }
+
+        private void ToggleAutoMonitorControls(bool isEnabled)
+        {
+            var chkAutoMonitor = this.Controls["chkAutoMonitor"] as CheckBox;
+            var chkIncludeSubfolders = this.Controls["chkIncludeSubfolders"] as CheckBox;
+            var chkDeleteAfterConvert = this.Controls["chkDeleteAfterConvert"] as CheckBox;
+
+            if (chkAutoMonitor != null)
+            {
+                chkAutoMonitor.Enabled = isEnabled;
+            }
+
+            if (chkIncludeSubfolders != null)
+            {
+                chkIncludeSubfolders.Enabled = isEnabled;
+            }
+
+            if (chkDeleteAfterConvert != null)
+            {
+                chkDeleteAfterConvert.Enabled = isEnabled;
+            }
         }
     }
 }
