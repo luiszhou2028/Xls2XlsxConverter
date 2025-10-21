@@ -16,9 +16,9 @@
     <AssemblyDescription>批量将XLS文件转换为XLSX格式</AssemblyDescription>
     <AssemblyCompany>HanaTech</AssemblyCompany>
     <AssemblyProduct>XLS转XLSX工具</AssemblyProduct>
-    <AssemblyCopyright>Copyright © 2024</AssemblyCopyright>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyCopyright>Copyright HanaTech © 2025</AssemblyCopyright>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

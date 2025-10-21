@@ -149,9 +149,9 @@ namespace Xls2XlsxConverter
             var chkDeleteAfterConvert = new CheckBox
             {
                 Name = "chkDeleteAfterConvert",
-                Text = "转换成功后删除源XLS",
+                Text = "删除源XLS",
                 Location = new Point(320, 150),
-                Size = new Size(200, 20),
+                Size = new Size(100, 20),
                 Font = new Font("Microsoft YaHei", 9F),
                 Checked = false
             };
@@ -190,7 +190,7 @@ namespace Xls2XlsxConverter
             {
                 Name = "chkAutoMonitor",
                 Text = "自动监控新XLS文件",
-                Location = new Point(330, 194),
+                Location = new Point(430, 150),
                 Size = new Size(200, 20),
                 Font = new Font("Microsoft YaHei", 9F),
                 Checked = false
@@ -202,7 +202,7 @@ namespace Xls2XlsxConverter
             {
                 Name = "lblAutoStatus",
                 Text = "自动监控未开启",
-                Location = new Point(330, 220),
+                Location = new Point(430, 175),
                 Size = new Size(230, 20),
                 Font = new Font("Microsoft YaHei", 8.5F),
                 ForeColor = Color.Gray
@@ -366,11 +366,11 @@ namespace Xls2XlsxConverter
                 }
             }
 
-            if (Path.GetFullPath(input).Equals(Path.GetFullPath(output), StringComparison.OrdinalIgnoreCase))
-            {
-                MessageBox.Show("输入与输出文件夹不能相同！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return false;
-            }
+            //if (Path.GetFullPath(input).Equals(Path.GetFullPath(output), StringComparison.OrdinalIgnoreCase))
+            //{
+            //    MessageBox.Show("输入与输出文件夹不能相同！", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            //    return false;
+            //}
 
             return true;
         }
@@ -593,6 +593,7 @@ namespace Xls2XlsxConverter
             var txtOutputFolder = this.Controls["txtOutputFolder"] as TextBox;
             var chkIncludeSubfolders = this.Controls["chkIncludeSubfolders"] as CheckBox;
             var chkOverwriteExisting = this.Controls["chkOverwriteExisting"] as CheckBox;
+            var chkDeleteAfterConvert = this.Controls["chkDeleteAfterConvert"] as CheckBox;
             var chkAutoMonitor = this.Controls["chkAutoMonitor"] as CheckBox;
             var lblAutoStatus = this.Controls["lblAutoStatus"] as Label;
 
@@ -609,7 +610,8 @@ namespace Xls2XlsxConverter
                 InputFolder = txtInputFolder.Text,
                 OutputFolder = txtOutputFolder.Text,
                 IncludeSubfolders = chkIncludeSubfolders.Checked,
-                OverwriteExisting = chkOverwriteExisting.Checked
+                OverwriteExisting = chkOverwriteExisting.Checked,
+                DeleteSourceAfterSuccess = chkDeleteAfterConvert != null && chkDeleteAfterConvert.Checked
             };
 
             _watcherCancellation = new CancellationTokenSource();
