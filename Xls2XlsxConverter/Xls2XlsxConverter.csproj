@@ -8,9 +8,6 @@
     <UseAppHost>true</UseAppHost>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <Prefer32Bit>true</Prefer32Bit>
-    <UseAppHost>true</UseAppHost>
-    <PlatformTarget>AnyCPU</PlatformTarget>
-    <Prefer32Bit>true</Prefer32Bit>
 
     <AssemblyTitle>XLS到XLSX批量转换器</AssemblyTitle>
     <AssemblyDescription>批量将XLS文件转换为XLSX格式</AssemblyDescription>
